@@ -1,0 +1,15 @@
+flask
+gunicorn
+opencv-python-headless
+pillow
+pillow-heif
+pytesseract
+pyzbar
+google-cloud-vision
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
+gspread
+pandas
+numpy
