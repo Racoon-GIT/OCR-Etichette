@@ -3,31 +3,28 @@ import re
 
 # ── Pattern base ───────────────────────────────────────────────────────────────
 
-# Base models (estendibile)
 _BASE_MODELS = r"(?:STAN\s*SMITH|SAMBA|GAZELLE|SUPERSTAR|CAMPUS|FORUM)"
-
-# Feature tokens (fino a 2): 00s/OG/II/2/ADV/BOLD/INDOOR/MID/LOW/HI/CL
 _FEATURE_TOK = r"(?:00S|00s|OG|II|2|ADV|BOLD|INDOOR|MID|LOW|HI|CL)"
-
-# Target tokens (max 1): J/K/C/W/M/EL/CF
 _TARGET_TOK  = r"(?:J|K|C|W|M|EL|CF)"
 
-# Modello = base + (feature){0,2} + (target)?
 RE_MODEL = re.compile(
     rf"\b({_BASE_MODELS}(?:\s+{_FEATURE_TOK}){{0,2}}(?:\s+{_TARGET_TOK})?)\b",
     re.IGNORECASE,
 )
 
-# Codice articolo: consenti uno spazio interno (es. "IE 3675")
-RE_ARTICOLO = re.compile(r"\b([A-Z]{1,2})\s?(\d{4,6})\b")
+# Articolo: 1–2 lettere + 4–6 cifre.
+# Accetta lo SPAZIO interno (“IE 3675”) e la confusione I↔1 (“1E3675” → IE3675).
+RE_ARTICOLO_CORE = r"([A-Z]{1,2})\s?(\d{4,6})"
+RE_ARTICOLO      = re.compile(rf"\b{RE_ARTICOLO_CORE}\b")
+RE_ARTICOLO_I1   = re.compile(rf"\b(1[A-Z])\s?(\d{{4,6}})\b")  # es. 1E3675
 
-# Colore: 2–4 token alfanumerici ≥3 char separati da “/” (include numeri tipo GUM5)
+# Colore (con numeri tipo GUM5)
 RE_COLORE = re.compile(r"\b[A-Z0-9]{3,}(?:/[A-Z0-9]{3,}){1,3}\b")
 
-# Taglia FR plausibile con frazioni
+# Taglia FR
 RE_TAGLIA_FR = re.compile(r"\b(3[0-9]|4[0-6])(?:[½⅓⅔]| ?1/2| ?1/3| ?2/3)?\b")
 
-# Barcode EAN-13 (pulito o “spaziato”)
+# Barcode (EAN-13 pulito o “spaziato”)
 RE_BARCODE_13 = re.compile(r"\b\d{13}\b")
 RE_BARCODE_SPACED = re.compile(r"(?:\d\D*){13,16}")
 
@@ -50,16 +47,16 @@ def _fix_common_ocr(text: str) -> str:
     t = re.sub(r"\bCAMPUS\s*0+S\b", "CAMPUS 00s", t, flags=re.IGNORECASE)
     # GUMS (S↔5) → GUM5
     t = re.sub(r"\bGUMS\b", "GUM5", t, flags=re.IGNORECASE)
+    # Articoli con I↔1 all’inizio: “1E3675” → “IE3675”
+    t = re.sub(r"\b1([A-Z])(\d{4,6})\b", r"I\1\2", t)
     return t
 
 def extract_fr_size(text: str) -> str:
-    """Preferisce la cella 'F'/'FR'; fallback a pattern generico."""
+    """Preferisce 'F'/'FR', poi fallback generico; normalizza le frazioni."""
     t = normalize_fraction(text)
-    # 'F' o 'FR' seguita da misura
     m = re.search(r"\bF(?:R)?\b[^0-9]*(\d{2}(?: ?(?:1/2|1/3|2/3)|[½⅓⅔])?)", t, re.IGNORECASE)
     if m:
         return normalize_fraction(m.group(1)).strip()
-    # fallback
     m = RE_TAGLIA_FR.search(t)
     return normalize_fraction(m.group(0)).strip() if m else ""
 
@@ -68,33 +65,27 @@ def _normalize_model(raw: str) -> str:
     if not raw:
         return ""
     t = re.sub(r"\s+", " ", raw.upper()).strip()
-
     parts = t.split(" ")
     base = []
     features = []
     target = []
-
     i = 0
     if i < len(parts) and parts[i] in {"STAN", "SAMBA", "GAZELLE", "SUPERSTAR", "CAMPUS", "FORUM"}:
         if parts[i] == "STAN" and i + 1 < len(parts) and parts[i+1] == "SMITH":
             base = ["STAN", "SMITH"]; i += 2
         else:
             base = [parts[i]]; i += 1
-
     while i < len(parts):
         p = parts[i]
         if p in {"J","K","C","W","M","EL","CF"} and not target:
             target = [p]; i += 1; continue
         if p in {"00S","00s","OG","II","2","ADV","BOLD","INDOOR","MID","LOW","HI","CL"} and len(features) < 2:
             features.append(p); i += 1; continue
-        i += 1  # ignora token non riconosciuti
-
-    # 00S -> 00s; 2 -> II
+        i += 1
     features = ["00s" if f in {"00S","00s"} else ("II" if f == "2" else f) for f in features]
-
     out = " ".join(base + features + target).strip()
     out = re.sub(r"\bCAMPUS 00S\b", "CAMPUS 00s", out)
-    out = re.sub(r"( \b\w+\b)( \1\b)+", r"\1", out)  # no duplicati consecutivi
+    out = re.sub(r"( \b\w+\b)( \1\b)+", r"\1", out)
     return out
 
 # ── Parser principale ──────────────────────────────────────────────────────────
@@ -102,8 +93,8 @@ def _normalize_model(raw: str) -> str:
 def parse_fields(text_general: str, text_digits: str):
     """
     Ritorna: (model, articolo, colore, size_fr, barcode, score, stato)
-    score in 0..100; stato OK se >= 75.
     """
+    # Pre-normalizza errori OCR tipici
     t = _fix_common_ocr(normalize_fraction(" ".join(text_general.split())))
     d = " ".join(text_digits.split())
 
@@ -113,17 +104,21 @@ def parse_fields(text_general: str, text_digits: str):
     if mm:
         model = _normalize_model(mm.group(0))
 
-    # Articolo (ricompone eventuale spazio)
+    # Articolo (tenta anche il caso '1E3675' → IE3675 e lo spazio interno)
     articolo = ""
     am = RE_ARTICOLO.search(t)
     if am:
         articolo = f"{am.group(1)}{am.group(2)}"
+    else:
+        am = RE_ARTICOLO_I1.search(t)
+        if am:
+            articolo = f"I{am.group(1)[1]}{am.group(2)}"  # sostituisci leading '1' con 'I'
 
-    # Colore (prova vicino all’articolo, poi globale)
+    # Colore (vicino all’articolo, poi globale)
     colore = ""
     if articolo:
         idx = t.find(articolo)
-        window = t[idx: idx + 150] if idx != -1 else t
+        window = t[idx: idx + 160] if idx != -1 else t
         cm = RE_COLORE.search(window)
         if cm:
             colore = cm.group(0)
