@@ -78,5 +78,68 @@ def debug_drive_search():
     except Exception as e:
         return {"error":"SEARCH_FAILED","detail":str(e)}, 500
 
+@app.get("/debug/ocr")
+def debug_ocr():
+    """
+    Esegue OCR grezzo su un file di Drive e/o ritorna un campo specifico del parsing.
+    Query:
+      - id (obbl.): fileId di Drive
+      - field (opz.): uno tra modello|articolo|colore|taglia_fr|barcode
+    """
+    from tempfile import TemporaryDirectory
+    from gdrive import download_file
+    try:
+        file_id = request.args.get("id")
+        if not file_id:
+            return {"error":"MISSING_PARAM","detail":"use ?id=<fileId>&field=... (field opzionale)"}, 400
+
+        with TemporaryDirectory() as td:
+            local_path = os.path.join(td, "img")
+            download_file(file_id, local_path)
+
+            # OCR grezzo + parsing strutturato
+            from ocr import load_image, tesseract_texts, vision_ocr, extract_fields
+            pil = load_image(local_path)
+            t_gen, t_dig = tesseract_texts(pil)
+            v_gen, v_dig = vision_ocr(local_path)
+            model, articolo, colore, size, barcode, score, stato = extract_fields(local_path)
+
+        # Se chiedi un field specifico, restituiamo solo quello
+        field = request.args.get("field", "").lower().strip()
+        if field:
+            mapping = {
+                "modello": model,
+                "articolo": articolo,
+                "colore": colore,
+                "taglia_fr": size,
+                "barcode": barcode,
+                "confidenza": score,
+                "stato": stato,
+            }
+            if field in mapping:
+                return {"id": file_id, "field": field, "value": mapping[field]}, 200
+            else:
+                return {"error":"BAD_FIELD","detail":"use one of modello|articolo|colore|taglia_fr|barcode|confidenza|stato"}, 400
+
+        # Altrimenti ritorniamo tutto: testi OCR e parsing
+        return {
+            "id": file_id,
+            "tesseract": {"general": t_gen, "digits": t_dig},
+            "vision": {"general": v_gen, "digits": v_dig},
+            "parsed": {
+                "modello": model,
+                "articolo": articolo,
+                "colore": colore,
+                "taglia_fr": size,
+                "barcode": barcode,
+                "confidenza": score,
+                "stato": stato
+            }
+        }, 200
+    except Exception as e:
+        return {"error":"DEBUG_OCR_FAILED","detail": str(e)}, 500
+
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT","10000")), debug=False)
