@@ -9,6 +9,7 @@ REVIEW = os.environ.get("DRIVE_REVIEW_FOLDER_ID")
 
 def process_batch(limit=20):
     files = list_images(INBOX, page_size=limit)
+    print(f"[WORKER] INBOX={INBOX} files_found={len(files)}")
     results = []
     rows = []
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
