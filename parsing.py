@@ -1,53 +1,63 @@
-import re
+# ── Modello: base + (feature)* + (target)? ─────────────────────────────────────
+# Base models supportati (puoi estendere facilmente la lista)
+_BASE_MODELS = r"(?:STAN\s*SMITH|SAMBA|GAZELLE|SUPERSTAR|CAMPUS|FORUM)"
+# Feature tokens (fino a 2 occorrenze): 00s/OG/II/2/ADV/BOLD/INDOOR/MID/LOW/HI/CL
+_FEATURE_TOK = r"(?:00S|00s|OG|II|2|ADV|BOLD|INDOOR|MID|LOW|HI|CL)"
+# Target tokens (al massimo 1): J/K/C/W/M/EL/CF
+_TARGET_TOK  = r"(?:J|K|C|W|M|EL|CF)"
 
-RE_MODEL = re.compile(r"\b(STAN\s*SMITH|CAMPUS\s*00s|GAZELLE|SAMBA|FORUM|SUPERSTAR)\b", re.IGNORECASE)
-RE_ARTICOLO = re.compile(r"\b[A-Z]{1,2}\d{4,6}\b")  # M20325, IF8774, HQ4327...
-RE_COLORE = re.compile(r"\b[A-Z0-9]{3,}(?:/[A-Z0-9]{3,}){1,3}\b")
-RE_TAGLIA_FR = re.compile(r"\b(3[0-9]|4[0-6])(?:[½⅓⅔]| ?1/2| ?1/3| ?2/3)?\b")
-RE_BARCODE_13 = re.compile(r"\b\d{13}\b")
-RE_BARCODE_SPACED = re.compile(r"(?:\d\s*){13,}")
+RE_MODEL = re.compile(
+    rf"\b({_BASE_MODELS}"
+    rf"(?:\s+{_FEATURE_TOK}){{0,2}}"
+    rf"(?:\s+{_TARGET_TOK})?"
+    rf")\b",
+    re.IGNORECASE,
+)
 
-def normalize_fraction(s: str) -> str:
-    return (s.replace("½", " 1/2")
-             .replace("⅓", " 1/3")
-             .replace("⅔", " 2/3"))
+def _normalize_model(raw: str) -> str:
+    """Normalizza: spazio singolo, CAMPUS 00s, II vs 2, ordine 'base + feature + target'."""
+    if not raw:
+        return ""
+    t = re.sub(r"\s+", " ", raw.upper()).strip()
 
-def parse_fields(text_general: str, text_digits: str):
-    t = normalize_fraction(" ".join(text_general.split()))
-    d = " ".join(text_digits.split())
+    # Separa token
+    parts = t.split(" ")
+    base = []
+    features = []
+    target = []
 
-    model = (RE_MODEL.search(t).group(1).upper() if RE_MODEL.search(t) else "")
-    articoli = RE_ARTICOLO.findall(t)
-    articolo = articoli[0] if articoli else ""
+    # ricostruisci base (può essere 'GAZELLE INDOOR' come feature? gestiamo sotto)
+    i = 0
+    if i < len(parts) and parts[i] in {"STAN", "SAMBA", "GAZELLE", "SUPERSTAR", "CAMPUS", "FORUM"}:
+        if parts[i] == "STAN" and i + 1 < len(parts) and parts[i+1] == "SMITH":
+            base = ["STAN", "SMITH"]; i += 2
+        else:
+            base = [parts[i]]; i += 1
+    # trattiamo 'INDOOR' come feature per GAZELLE
+    while i < len(parts):
+        p = parts[i]
+        if p in {"J","K","C","W","M","EL","CF"}:
+            target = [p]; i += 1
+        elif p in {"00S","00s","OG","II","2","ADV","BOLD","INDOOR","MID","LOW","HI","CL"}:
+            features.append(p); i += 1
+        else:
+            # ignora token estranei
+            i += 1
 
-    colore = ""
-    if articolo:
-        idx = t.find(articolo)
-        if idx != -1:
-            m = RE_COLORE.search(t[idx: idx+100])
-            if m: colore = m.group(0)
-    if not colore:
-        m = RE_COLORE.search(t)
-        if m: colore = m.group(0)
+    # Normalizzazioni
+    # 00S -> 00s (stilistica adidas)
+    features = ["00s" if f in {"00S","00s"} else f for f in features]
+    # 2 -> II (alcune etichette usano '2')
+    features = ["II" if f == "2" else f for f in features]
 
-    size = ""
-    m = RE_TAGLIA_FR.search(t)
-    if m: size = m.group(0)
+    # Se base è GAZELLE e ha 'INDOOR' nei features, va bene come feature (uscita: "GAZELLE INDOOR ...")
+    # Ordine: base + features (max 2) + target (max 1)
+    out = " ".join(base + features + target).strip()
 
-    barcode = ""
-    m = RE_BARCODE_13.search(d)
-    if m: barcode = m.group(0)
-    if not barcode:
-        m = RE_BARCODE_SPACED.search(d) or RE_BARCODE_SPACED.search(t)
-        if m:
-            digits = re.sub(r"\D", "", m.group(0))
-            if len(digits) == 13:
-                barcode = digits
+    # Aggiusta casi tipici
+    # CAMPUS 00s: assicura minuscola 's'
+    out = re.sub(r"\bCAMPUS 00S\b", "CAMPUS 00s", out)
+    # Elimina duplicati consecutivi
+    out = re.sub(r"( \b\w+\b)( \1\b)+", r"\1", out)
 
-    score = 0
-    score += 25 if model else 0
-    score += 25 if articolo else 0
-    score += 25 if colore else 0
-    score += 25 if barcode else 0
-    stato = "OK" if score >= 75 else "REVIEW"
-    return model, articolo, colore, size, barcode, score, stato
+    return out
