@@ -18,8 +18,8 @@ RE_MODEL = re.compile(
     re.IGNORECASE,
 )
 
-# Codice articolo (es. IE3675, M20325, HQ4327…)
-RE_ARTICOLO = re.compile(r"\b[A-Z]{1,2}\d{4,6}\b")
+# Codice articolo: consenti uno spazio interno (es. "IE 3675")
+RE_ARTICOLO = re.compile(r"\b([A-Z]{1,2})\s?(\d{4,6})\b")
 
 # Colore: 2–4 token alfanumerici ≥3 char separati da “/” (include numeri tipo GUM5)
 RE_COLORE = re.compile(r"\b[A-Z0-9]{3,}(?:/[A-Z0-9]{3,}){1,3}\b")
@@ -53,14 +53,15 @@ def _fix_common_ocr(text: str) -> str:
     return t
 
 def extract_fr_size(text: str) -> str:
-    """Preferisce la cella 'F' (FR); fallback a pattern generico."""
+    """Preferisce la cella 'F'/'FR'; fallback a pattern generico."""
     t = normalize_fraction(text)
-    m = re.search(r"\bF\b[^0-9]*(\d{2}(?: ?(?:1/2|1/3|2/3)|[½⅓⅔])?)", t, re.IGNORECASE)
+    # 'F' o 'FR' seguita da misura
+    m = re.search(r"\bF(?:R)?\b[^0-9]*(\d{2}(?: ?(?:1/2|1/3|2/3)|[½⅓⅔])?)", t, re.IGNORECASE)
     if m:
-        s = m.group(1)
-        return normalize_fraction(s).strip()
+        return normalize_fraction(m.group(1)).strip()
+    # fallback
     m = RE_TAGLIA_FR.search(t)
-    return normalize_fraction(m.group(0)) if m else ""
+    return normalize_fraction(m.group(0)).strip() if m else ""
 
 def _normalize_model(raw: str) -> str:
     """Normalizza modello: spazi, 00s, II, ordine base+feature+target."""
@@ -112,11 +113,11 @@ def parse_fields(text_general: str, text_digits: str):
     if mm:
         model = _normalize_model(mm.group(0))
 
-    # Articolo
+    # Articolo (ricompone eventuale spazio)
     articolo = ""
     am = RE_ARTICOLO.search(t)
     if am:
-        articolo = am.group(0)
+        articolo = f"{am.group(1)}{am.group(2)}"
 
     # Colore (prova vicino all’articolo, poi globale)
     colore = ""
